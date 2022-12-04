@@ -21,6 +21,9 @@ struct Token {
     char *str; // トークン文字列
 };
 
+// Input program
+char *user_input;
+
 Token *token;
 
 void error(char *fmt, ...) {
@@ -29,6 +32,20 @@ void error(char *fmt, ...) {
     vfprintf(stderr, ap, fmt);
     fprintf(stderr, "\n");
     exit(1);
+}
+
+// Reports an error location and exit.
+void error_at(char *loc, char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+
+  int pos = loc - user_input;
+  fprintf(stderr, "%s\n", user_input);
+  fprintf(stderr, "%*s", pos, ""); // print pos spaces.
+  fprintf(stderr, "^ ");
+  vfprintf(stderr, fmt, ap);
+  fprintf(stderr, "\n");
+  exit(1);
 }
 
 // 次のトークンが期待されてる記号なら、ひとつ読み進めてtrueを返す。
@@ -42,14 +59,14 @@ bool consume(char op) {
 // 次のトークンが期待されてる記号なら、トークンを一つ進める。
 // それ以外ならエラー
 void expect(char op) {
-    if (token->kind != TK_RESERVED || token->str[0] != op) error("'%c'ではありません", op);
+    if (token->kind != TK_RESERVED || token->str[0] != op) error_at(token->str, "expected '%c'", op);
     token = token->next;
 }
 
 // 次が数値なら、トークンをひとつ進めてその数値を返す。
 // それ以外ならエラー
 int expect_number() {
-    if (token->kind != TK_NUM) error ("数ではありません");
+    if (token->kind != TK_NUM) error_at(token->str, "expected a number");
     int val = token->val;
     token = token->next;
     return val;
@@ -68,7 +85,8 @@ Token *new_token(TokenKind kind, Token *cur, char *str) {
     return tok;
 }
 
-Token *tokenize(char *p) {
+Token *tokenize() {
+    char *p = user_input;
     Token head;
     head.next = NULL;
     Token *cur = &head;
@@ -86,7 +104,7 @@ Token *tokenize(char *p) {
             cur = new_token(TK_NUM, cur, p);
             cur->val = strtol(p, &p, 10);
         } else {
-            error("unexpected char while tokenization");
+            error_at(p, "unexpected char while tokenization");
         }
     }
 
@@ -100,7 +118,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    token = tokenize(argv[1]);
+    user_input = argv[1];
+    token = tokenize();
 
     printf(".intel_syntax noprefix\n");
     printf(".globl main\n");
