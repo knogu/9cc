@@ -18,6 +18,7 @@ struct Token {
     Token *next;
     int val; // represents value of a number when kind is TK_NUM)
     char *str; // string of the entire token
+    int len; // length of the token
 };
 
 // Input program
@@ -39,14 +40,15 @@ void error_at(char *loc, char *fmt, ...) {
     exit(1);
 }
 
-bool consume(char op) {
-    if (token -> kind != TK_RESERVED || token->str[0] != op) return false;
+bool consume(char *op) {
+    if (token->kind != TK_RESERVED || strlen(op) != token-> len || memcmp(token->str, op, token->len)) return false;
     token = token->next;
     return true;
 }
 
-void expect(char op) {
-    if (token->kind != TK_RESERVED || token->str[0] != op) error_at(token->str, "expected '%c'", op);
+void expect(char *op) {
+    if (token->kind != TK_RESERVED || strlen(op) != token-> len || memcmp(token->str, op, token->len))
+        error_at(token->str, "expected '%c'", op);
     token = token->next;
 }
 
@@ -61,10 +63,15 @@ bool at_eof() {
     return token->kind == TK_EOF;
 }
 
-Token *new_token(TokenKind kind, Token *cur, char *str) {
+bool startswith(char *p, char *q) {
+    return memcmp(p, q, strlen(q)) == 0;
+}
+
+Token *new_token(TokenKind kind, Token *cur, char *str, int len) {
     Token *tok = calloc(1, sizeof(Token));
     tok->kind = kind;
     tok->str = str;
+    tok->len = len;
     cur->next = tok;
     return tok;
 }
@@ -80,21 +87,29 @@ Token *tokenize(char *p) {
             continue;
         }
 
-        if (*p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '(' || *p == ')') {
-            cur = new_token(TK_RESERVED, cur, p++);
+        if (startswith(p, "==") || startswith(p, "!=") || startswith(p, "<=") || startswith(p, ">=")) {
+            cur = new_token(TK_RESERVED, cur, p, 2);
+            p += 2;
+            continue;
+        }
+
+        if (*p == '+' || *p == '-' || *p == '*' || *p == '/' || *p == '(' || *p == ')' || *p == '<' || *p == '>') {
+            cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
         }
 
         if (isdigit(*p)) {
-            cur = new_token(TK_NUM, cur, p);
+            cur = new_token(TK_NUM, cur, p, 0);
+            char *q = p;
             cur->val = strtol(p, &p, 10);
+            cur->len = p - q;
             continue;
         }
 
-        error_at(p, "expected a number");
+        error_at(p, "expected a number in main tokenizer loop");
     }
 
-    new_token(TK_EOF, cur, p);
+    new_token(TK_EOF, cur, p, 0);
     return head.next;
 }
 
@@ -103,6 +118,10 @@ typedef enum {
     ND_SUB, // -
     ND_MUL, // *
     ND_DIV, // /
+    ND_EQ, // ==
+    ND_NEQ, // !=
+    ND_LT, // <
+    ND_LEQ, // <=
     ND_NUM, // integer
 } NodeKind;
 
@@ -134,19 +153,21 @@ Node *expr();
 Node *mul();
 Node *unary();
 Node *primary();
+Node *relational();
+Node *add();
 
 Node *primary() {
-    if (consume('(')) {
+    if (consume("(")) {
         Node *node = expr();
-        expect(')');
+        expect(")");
         return node;
     }
     return new_node_num(expect_number());
 }
 
 Node *unary() {
-    if (consume('+')) return primary();
-    if (consume('-')) return new_node(ND_SUB, new_node_num(0), unary());
+    if (consume("+")) return primary();
+    if (consume("-")) return new_node(ND_SUB, new_node_num(0), unary());
     return primary();
 }
 
@@ -154,18 +175,39 @@ Node *mul() {
     Node *node = unary();
 
     for(;;) {
-        if (consume('*')) node = new_node(ND_MUL, node, unary());
-        else if (consume('/')) node = new_node(ND_DIV, node, unary());
+        if (consume("*")) node = new_node(ND_MUL, node, unary());
+        else if (consume("/")) node = new_node(ND_DIV, node, unary());
         else return node;
     }
 }
 
 Node *expr() {
-    Node *node = mul();
+    Node *node = relational();
 
     for(;;) {
-        if (consume('+')) node = new_node(ND_ADD, node, mul());
-        else if (consume('-')) node = new_node(ND_SUB, node, mul());
+        if (consume("==")) node = new_node(ND_EQ, node, relational());
+        else if (consume("!=")) node = new_node(ND_NEQ, node, relational());
+        else return node;
+    }
+}
+
+Node *relational() {
+    Node *node = add();
+
+    for(;;) {
+        if (consume("<")) node = new_node(ND_LT, node, add());
+        else if (consume(">")) node = new_node(ND_LT, add(), node);
+        else if (consume("<=")) node = new_node(ND_LEQ, node, add());
+        else if (consume(">=")) node = new_node(ND_LEQ, add(), node);
+        else return node;
+    }
+}
+
+Node *add() {
+    Node *node = mul();
+    for(;;) {
+        if (consume("+")) node = new_node(ND_ADD, node, mul());
+        else if (consume("-")) node = new_node(ND_SUB, node, mul());
         else return node;
     }
 }
@@ -194,6 +236,26 @@ void gen(Node *node) {
             break;
         case ND_MUL:
             printf("    imul rax, rdi\n");
+            break;
+        case ND_EQ:
+            printf("    cmp rax, rdi\n");
+            printf("    sete al\n"); // move the result of cmp (recorded in flag register) to al register (smallest 8 bits in rax)
+            printf("    movzb rax, al\n"); // clear value of rax except for al to zero
+            break;
+        case ND_NEQ:
+            printf("    cmp rax, rdi\n");
+            printf("    setne al\n"); // move the result of cmp (recorded in flag register) to al register (smallest 8 bits in rax)
+            printf("    movzb rax, al\n"); // clear value of rax except for al to zero
+            break;
+        case ND_LT:
+            printf("    cmp rax, rdi\n");
+            printf("    setl al\n"); // move the result of cmp (recorded in flag register) to al register (smallest 8 bits in rax)
+            printf("    movzb rax, al\n"); // clear value of rax except for al to zero
+            break;
+        case ND_LEQ:
+            printf("    cmp rax, rdi\n");
+            printf("    setle al\n"); // move the result of cmp (recorded in flag register) to al register (smallest 8 bits in rax)
+            printf("    movzb rax, al\n"); // clear value of rax except for al to zero
             break;
         case ND_DIV:
             // Set value stored at `rax` to `rdx` + `rax` by extending 64bit to 128bit
